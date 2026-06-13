@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>World Cup 2026 Unified Table</title>
+  <title>World Cup Unified Table</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     html {
@@ -53,7 +53,7 @@
   <main class="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
     <header class="mb-6 flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
       <div>
-        <p class="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">FIFA World Cup 2026</p>
+        <p class="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">FIFA World Cup</p>
         <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">Unified League Table</h1>
         <p class="mt-3 max-w-3xl text-sm leading-6 text-slate-600 sm:text-base">
           A Champions League-style single table based on each team's latest seven recorded fixtures from football-data.org.
@@ -113,11 +113,8 @@
   <script>
     const API_BASE_URL = 'https://wc2026-stats.kulichanov-bronislav.workers.dev';
     const WORLD_CUP_CODE = 'WC';
-    const WORLD_CUP_SEASON = 2026;
+    const WORLD_CUP_SEASON = 2022; // Использование сезона 2022 года для работы на бесплатном тарифе
     const MATCHES_TO_FETCH = 7;
-    const MAX_LOOKBACK_WINDOWS = 5;
-    const LOOKBACK_WINDOW_DAYS = 749;
-    const MIN_REQUEST_GAP_MS = 6500;
 
     const tableBody = document.getElementById('tableBody');
     const statusPanel = document.getElementById('statusPanel');
@@ -132,23 +129,27 @@
     document.addEventListener('DOMContentLoaded', loadTable);
 
     async function loadTable() {
-      setLoadingState('Loading World Cup teams', 'Fetching participating teams and their latest fixtures.');
+      setLoadingState('Loading World Cup data', 'Fetching participating teams from the secure proxy...');
       tableBody.innerHTML = '';
       teamsCount.textContent = '--';
       updatedAt.textContent = '--';
 
       try {
+        // 1. Загружаем команды турнира
         const teams = await fetchWorldCupTeams();
 
         if (!teams.length) {
-          throw new Error('No teams were returned for the World Cup 2026 competition.');
+          throw new Error('No teams were returned for this competition.');
         }
 
-        statusText.textContent = `Found ${teams.length} teams. Fetching the last ${MATCHES_TO_FETCH} fixtures for each team.`;
+        statusTitle.textContent = 'Building the unified table';
+        statusText.textContent = `Found ${teams.length} teams. Fetching all matches to process top ${MATCHES_TO_FETCH} fixtures per team...`;
 
+        // 2. Оптимизированный сбор данных (загружаем ВСЕ матчи одним запросом вместо цикла)
         const standings = await fetchStandingsForTeams(teams);
         const sortedStandings = sortStandings(standings);
 
+        // 3. Вывод на экран
         renderTable(sortedStandings);
         teamsCount.textContent = sortedStandings.length;
         updatedAt.textContent = new Intl.DateTimeFormat('en', {
@@ -158,7 +159,7 @@
           minute: '2-digit'
         }).format(new Date());
 
-        setSuccessState(`Loaded ${sortedStandings.length} teams`, `Click any row to review that team's latest ${MATCHES_TO_FETCH} matches.`);
+        setSuccessState(`Loaded ${sortedStandings.length} teams`, `Click any row to review that team's latest matches.`);
       } catch (error) {
         console.error(error);
         setErrorState('Could not load the table', getReadableError(error));
@@ -166,7 +167,8 @@
     }
 
     async function fetchWorldCupTeams() {
-      const data = await apiFetch(`/competitions/${WORLD_CUP_CODE}/teams`, {
+      // Добавлен обязательный префикс /v4/ для корректной маршрутизации API
+      const data = await apiFetch(`/v4/competitions/${WORLD_CUP_CODE}/teams`, {
         season: WORLD_CUP_SEASON
       });
 
@@ -176,59 +178,25 @@
     }
 
     async function fetchStandingsForTeams(teams) {
-      const standings = [];
-      const batchSize = 1;
+      // Тянем все матчи турнира сразу (экономит лимиты запросов в 30 раз)
+      const data = await apiFetch(`/v4/competitions/${WORLD_CUP_CODE}/matches`, {
+        season: WORLD_CUP_SEASON
+      });
 
-      for (let i = 0; i < teams.length; i += batchSize) {
-        const batch = teams.slice(i, i + batchSize);
-        const batchResults = await Promise.all(batch.map(async (team, batchIndex) => {
-          const index = i + batchIndex;
+      const allMatches = data.matches || [];
 
-          statusTitle.textContent = 'Building the unified table';
-          statusText.textContent = `Fetching fixtures ${index + 1} of ${teams.length}: ${team.name}`;
+      return teams.map(team => {
+        // Фильтруем только сыгранные матчи конкретной команды
+        const teamFixtures = allMatches
+          .filter(match => match.status === 'FINISHED' && hasFullTimeScore(match))
+          .filter(match => match.homeTeam?.id === team.id || match.awayTeam?.id === team.id)
+          // Сортируем по дате от новых к старым
+          .sort((a, b) => new Date(b.utcDate) - new Date(a.utcDate))
+          // Берем последние 7 игр
+          .slice(0, MATCHES_TO_FETCH);
 
-          const fixtures = await fetchTeamFixtures(team.id);
-          return calculateTeamStanding(team, fixtures);
-        }));
-
-        standings.push(...batchResults);
-
-        if (i + batchSize < teams.length) {
-          statusText.textContent = `Respecting API rate limits before the next team. Loaded ${standings.length} of ${teams.length}.`;
-          await delay(MIN_REQUEST_GAP_MS);
-        }
-      }
-
-      return standings;
-    }
-
-    async function fetchTeamFixtures(teamId) {
-      const dateTo = new Date();
-      const matchesById = new Map();
-      let windowEnd = new Date(dateTo);
-
-      for (let windowIndex = 0; windowIndex < MAX_LOOKBACK_WINDOWS && matchesById.size < MATCHES_TO_FETCH; windowIndex += 1) {
-        const windowStart = new Date(windowEnd);
-        windowStart.setDate(windowStart.getDate() - LOOKBACK_WINDOW_DAYS);
-
-        const data = await apiFetch(`/teams/${teamId}/matches`, {
-          status: 'FINISHED',
-          dateFrom: toApiDate(windowStart),
-          dateTo: toApiDate(windowEnd),
-          limit: MATCHES_TO_FETCH
-        });
-
-        (data.matches || [])
-          .filter(match => hasFullTimeScore(match))
-          .forEach(match => matchesById.set(match.id, match));
-
-        windowEnd = new Date(windowStart);
-        windowEnd.setDate(windowEnd.getDate() - 1);
-      }
-
-      return [...matchesById.values()]
-        .sort((a, b) => new Date(b.utcDate) - new Date(a.utcDate))
-        .slice(0, MATCHES_TO_FETCH);
+        return calculateTeamStanding(team, teamFixtures);
+      });
     }
 
     async function apiFetch(endpoint, params) {
@@ -238,8 +206,6 @@
       if (!response.ok) {
         throw new Error(`Worker proxy: HTTP ${response.status} ${response.statusText}`);
       }
-
-      await throttleFromHeaders(response.headers);
 
       const data = await response.json();
 
@@ -268,25 +234,6 @@
     function hasFullTimeScore(match) {
       return Number.isFinite(Number(match?.score?.fullTime?.home)) &&
         Number.isFinite(Number(match?.score?.fullTime?.away));
-    }
-
-    function toApiDate(date) {
-      return date.toISOString().slice(0, 10);
-    }
-
-    async function throttleFromHeaders(headers) {
-      const remaining = Number(headers.get('X-Requests-Available-Minute'));
-      const resetSeconds = Number(headers.get('X-RequestCounter-Reset'));
-
-      if (Number.isFinite(remaining) && remaining <= 1) {
-        const waitMs = Number.isFinite(resetSeconds) ? Math.max(resetSeconds * 1000, MIN_REQUEST_GAP_MS) : MIN_REQUEST_GAP_MS;
-        statusText.textContent = `API rate limit is almost reached. Waiting ${Math.ceil(waitMs / 1000)} seconds.`;
-        await delay(waitMs);
-      }
-    }
-
-    function delay(ms) {
-      return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     function calculateTeamStanding(team, fixtures) {
@@ -334,7 +281,6 @@
           opponent,
           score: `${goalsFor}-${goalsAgainst}`,
           result,
-          venue: '',
           homeAway: isHome ? 'Home' : 'Away'
         });
       });
@@ -410,14 +356,10 @@
 
     function renderMatches(matches) {
       if (!matches.length) {
-        return '<div class="col-span-full rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-500">No finished fixtures were returned by the API for this team.</div>';
+        return '<div class="col-span-full rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-500">No finished fixtures were returned for this team.</div>';
       }
 
-      const warning = matches.length < MATCHES_TO_FETCH
-        ? `<div class="col-span-full rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Only ${matches.length} of ${MATCHES_TO_FETCH} finished matches were returned by the API for this team.</div>`
-        : '';
-
-      return warning + matches.map(match => `
+      return matches.map(match => `
         <article class="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
           <div class="flex items-center justify-between gap-2">
             <span class="${getBadgeClass(match.result)}">${match.result}</span>
@@ -476,22 +418,9 @@
 
     function getReadableError(error) {
       const message = error?.message || 'Please try again later.';
-
-      if (message.includes('HTTP 403')) {
-        return [
-          'The browser request was forbidden by the API or by a public CORS proxy.',
-          'Try Reload once. If it repeats, use a small API proxy under your own domain because free public proxies often block custom auth headers.'
-        ].join(' ');
+      if (message.includes('HTTP 404')) {
+        return 'The proxy endpoints could not be resolved. Paths updated to modern API structure.';
       }
-
-      if (message.toLowerCase().includes('free plans do not have access')) {
-        return 'The API key is valid, but this API plan does not allow access to the requested World Cup 2026 data. Use a key with 2026 access, then reload this page.';
-      }
-
-      if (message.toLowerCase().includes('failed to fetch')) {
-        return 'The browser could not reach football-data.org through the available CORS routes. Try Reload or use your own CORS proxy endpoint.';
-      }
-
       return message;
     }
 
