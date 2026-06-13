@@ -111,33 +111,13 @@
   </main>
 
   <script>
-    const API_KEY = '57ce39c2a0634c3d9854f07a65fbb5c7';
-    const API_BASE_URL = 'https://api.football-data.org/v4';
+    const API_BASE_URL = 'https://wc2026-stats.kulichanov-bronislav.workers.dev';
     const WORLD_CUP_CODE = 'WC';
     const WORLD_CUP_SEASON = 2026;
     const MATCHES_TO_FETCH = 7;
     const MAX_LOOKBACK_WINDOWS = 5;
     const LOOKBACK_WINDOW_DAYS = 749;
     const MIN_REQUEST_GAP_MS = 6500;
-
-    const API_HEADERS = {
-      'X-Auth-Token': API_KEY
-    };
-
-    const REQUEST_ROUTES = [
-      {
-        name: 'Direct football-data.org request',
-        buildUrl: url => url
-      },
-      {
-        name: 'corsproxy.io',
-        buildUrl: url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`
-      },
-      {
-        name: 'thingproxy',
-        buildUrl: url => `https://thingproxy.freeboard.io/fetch/${url}`
-      }
-    ];
 
     const tableBody = document.getElementById('tableBody');
     const statusPanel = document.getElementById('statusPanel');
@@ -253,39 +233,25 @@
 
     async function apiFetch(endpoint, params) {
       const targetUrl = `${API_BASE_URL}${endpoint}?${new URLSearchParams(params).toString()}`;
-      const errors = [];
+      const response = await fetch(targetUrl);
 
-      for (const route of REQUEST_ROUTES) {
-        const requestUrl = route.buildUrl(targetUrl);
-
-        try {
-          const response = await fetch(requestUrl, {
-            headers: API_HEADERS
-          });
-
-          if (!response.ok) {
-            throw new Error(`${route.name}: HTTP ${response.status} ${response.statusText}`);
-          }
-
-          await throttleFromHeaders(response.headers);
-
-          const data = await response.json();
-
-          if (data.errors && Object.keys(data.errors).length) {
-            throw new Error(`${route.name}: ${formatApiErrors(data.errors)}`);
-          }
-
-          if (data.message || data.errorCode) {
-            throw new Error(`${route.name}: ${data.message || data.errorCode}`);
-          }
-
-          return data;
-        } catch (error) {
-          errors.push(error.message || String(error));
-        }
+      if (!response.ok) {
+        throw new Error(`Worker proxy: HTTP ${response.status} ${response.statusText}`);
       }
 
-      throw new Error(errors.join(' | '));
+      await throttleFromHeaders(response.headers);
+
+      const data = await response.json();
+
+      if (data.errors && Object.keys(data.errors).length) {
+        throw new Error(`Worker proxy: ${formatApiErrors(data.errors)}`);
+      }
+
+      if (data.message || data.errorCode) {
+        throw new Error(`Worker proxy: ${data.message || data.errorCode}`);
+      }
+
+      return data;
     }
 
     function normalizeTeam(team) {
