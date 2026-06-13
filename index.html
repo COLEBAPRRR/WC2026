@@ -56,7 +56,7 @@
         <p class="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">FIFA World Cup 2026</p>
         <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">Unified League Table</h1>
         <p class="mt-3 max-w-3xl text-sm leading-6 text-slate-600 sm:text-base">
-          A Champions League-style single table based on each team's latest seven recorded fixtures from API-Football.
+          A Champions League-style single table based on each team's latest seven recorded fixtures from football-data.org.
         </p>
       </div>
 
@@ -111,16 +111,32 @@
   </main>
 
   <script>
-    const API_KEY = '0336324f761f45cca91931287431a91a';
-    const API_BASE_URL = 'https://v3.football.api-sports.io';
-    const WORLD_CUP_LEAGUE_ID = 1;
+    const API_KEY = '57ce39c2a0634c3d9854f07a65fbb5c7';
+    const API_BASE_URL = 'https://api.football-data.org/v4';
+    const WORLD_CUP_CODE = 'WC';
     const WORLD_CUP_SEASON = 2026;
     const MATCHES_TO_FETCH = 7;
+    const MAX_LOOKBACK_WINDOWS = 5;
+    const LOOKBACK_WINDOW_DAYS = 749;
+    const MIN_REQUEST_GAP_MS = 6500;
 
-    const CORS_PROXIES = [
-      url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-      url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-      url => `https://cors-anywhere.herokuapp.com/${url}`
+    const API_HEADERS = {
+      'X-Auth-Token': API_KEY
+    };
+
+    const REQUEST_ROUTES = [
+      {
+        name: 'Direct football-data.org request',
+        buildUrl: url => url
+      },
+      {
+        name: 'corsproxy.io',
+        buildUrl: url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`
+      },
+      {
+        name: 'thingproxy',
+        buildUrl: url => `https://thingproxy.freeboard.io/fetch/${url}`
+      }
     ];
 
     const tableBody = document.getElementById('tableBody');
@@ -165,74 +181,146 @@
         setSuccessState(`Loaded ${sortedStandings.length} teams`, `Click any row to review that team's latest ${MATCHES_TO_FETCH} matches.`);
       } catch (error) {
         console.error(error);
-        setErrorState('Could not load the table', error.message || 'Please try again later.');
+        setErrorState('Could not load the table', getReadableError(error));
       }
     }
 
     async function fetchWorldCupTeams() {
-      const data = await apiFetch('/teams', {
-        league: WORLD_CUP_LEAGUE_ID,
+      const data = await apiFetch(`/competitions/${WORLD_CUP_CODE}/teams`, {
         season: WORLD_CUP_SEASON
       });
 
-      return (data.response || [])
-        .map(item => item.team)
+      return (data.teams || [])
+        .map(normalizeTeam)
         .filter(Boolean);
     }
 
     async function fetchStandingsForTeams(teams) {
-      const requests = teams.map(async (team, index) => {
-        statusTitle.textContent = 'Building the unified table';
-        statusText.textContent = `Fetching fixtures ${index + 1} of ${teams.length}: ${team.name}`;
+      const standings = [];
+      const batchSize = 1;
 
-        const fixtures = await fetchTeamFixtures(team.id);
-        return calculateTeamStanding(team, fixtures);
-      });
+      for (let i = 0; i < teams.length; i += batchSize) {
+        const batch = teams.slice(i, i + batchSize);
+        const batchResults = await Promise.all(batch.map(async (team, batchIndex) => {
+          const index = i + batchIndex;
 
-      return Promise.all(requests);
+          statusTitle.textContent = 'Building the unified table';
+          statusText.textContent = `Fetching fixtures ${index + 1} of ${teams.length}: ${team.name}`;
+
+          const fixtures = await fetchTeamFixtures(team.id);
+          return calculateTeamStanding(team, fixtures);
+        }));
+
+        standings.push(...batchResults);
+
+        if (i + batchSize < teams.length) {
+          statusText.textContent = `Respecting API rate limits before the next team. Loaded ${standings.length} of ${teams.length}.`;
+          await delay(MIN_REQUEST_GAP_MS);
+        }
+      }
+
+      return standings;
     }
 
     async function fetchTeamFixtures(teamId) {
-      const data = await apiFetch('/fixtures', {
-        team: teamId,
-        last: MATCHES_TO_FETCH
-      });
+      const dateTo = new Date();
+      const matchesById = new Map();
+      let windowEnd = new Date(dateTo);
 
-      return (data.response || []).slice(0, MATCHES_TO_FETCH);
+      for (let windowIndex = 0; windowIndex < MAX_LOOKBACK_WINDOWS && matchesById.size < MATCHES_TO_FETCH; windowIndex += 1) {
+        const windowStart = new Date(windowEnd);
+        windowStart.setDate(windowStart.getDate() - LOOKBACK_WINDOW_DAYS);
+
+        const data = await apiFetch(`/teams/${teamId}/matches`, {
+          status: 'FINISHED',
+          dateFrom: toApiDate(windowStart),
+          dateTo: toApiDate(windowEnd),
+          limit: MATCHES_TO_FETCH
+        });
+
+        (data.matches || [])
+          .filter(match => hasFullTimeScore(match))
+          .forEach(match => matchesById.set(match.id, match));
+
+        windowEnd = new Date(windowStart);
+        windowEnd.setDate(windowEnd.getDate() - 1);
+      }
+
+      return [...matchesById.values()]
+        .sort((a, b) => new Date(b.utcDate) - new Date(a.utcDate))
+        .slice(0, MATCHES_TO_FETCH);
     }
 
     async function apiFetch(endpoint, params) {
       const targetUrl = `${API_BASE_URL}${endpoint}?${new URLSearchParams(params).toString()}`;
-      let lastError;
+      const errors = [];
 
-      for (const proxy of CORS_PROXIES) {
-        const proxiedUrl = proxy(targetUrl);
+      for (const route of REQUEST_ROUTES) {
+        const requestUrl = route.buildUrl(targetUrl);
 
         try {
-          const response = await fetch(proxiedUrl, {
-            headers: {
-              'x-rapidapi-key': API_KEY,
-              'x-apisports-key': API_KEY
-            }
+          const response = await fetch(requestUrl, {
+            headers: API_HEADERS
           });
 
           if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            throw new Error(`${route.name}: HTTP ${response.status} ${response.statusText}`);
           }
+
+          await throttleFromHeaders(response.headers);
 
           const data = await response.json();
 
           if (data.errors && Object.keys(data.errors).length) {
-            throw new Error(JSON.stringify(data.errors));
+            throw new Error(`${route.name}: ${formatApiErrors(data.errors)}`);
+          }
+
+          if (data.message || data.errorCode) {
+            throw new Error(`${route.name}: ${data.message || data.errorCode}`);
           }
 
           return data;
         } catch (error) {
-          lastError = error;
+          errors.push(error.message || String(error));
         }
       }
 
-      throw lastError || new Error('All CORS proxy requests failed.');
+      throw new Error(errors.join(' | '));
+    }
+
+    function normalizeTeam(team) {
+      if (!team || !team.id) return null;
+
+      return {
+        id: team.id,
+        name: team.name || team.shortName || team.tla || 'Unknown team',
+        logo: team.crest || team.flag || '',
+        tla: team.tla || ''
+      };
+    }
+
+    function hasFullTimeScore(match) {
+      return Number.isFinite(Number(match?.score?.fullTime?.home)) &&
+        Number.isFinite(Number(match?.score?.fullTime?.away));
+    }
+
+    function toApiDate(date) {
+      return date.toISOString().slice(0, 10);
+    }
+
+    async function throttleFromHeaders(headers) {
+      const remaining = Number(headers.get('X-Requests-Available-Minute'));
+      const resetSeconds = Number(headers.get('X-RequestCounter-Reset'));
+
+      if (Number.isFinite(remaining) && remaining <= 1) {
+        const waitMs = Number.isFinite(resetSeconds) ? Math.max(resetSeconds * 1000, MIN_REQUEST_GAP_MS) : MIN_REQUEST_GAP_MS;
+        statusText.textContent = `API rate limit is almost reached. Waiting ${Math.ceil(waitMs / 1000)} seconds.`;
+        await delay(waitMs);
+      }
+    }
+
+    function delay(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     function calculateTeamStanding(team, fixtures) {
@@ -250,10 +338,10 @@
       };
 
       fixtures.forEach(item => {
-        const home = item.teams.home;
-        const away = item.teams.away;
-        const homeGoals = Number(item.goals.home ?? 0);
-        const awayGoals = Number(item.goals.away ?? 0);
+        const home = normalizeTeam(item.homeTeam);
+        const away = normalizeTeam(item.awayTeam);
+        const homeGoals = Number(item.score.fullTime.home);
+        const awayGoals = Number(item.score.fullTime.away);
         const isHome = home.id === team.id;
         const opponent = isHome ? away : home;
         const goalsFor = isHome ? homeGoals : awayGoals;
@@ -275,12 +363,12 @@
         }
 
         standing.matches.push({
-          id: item.fixture.id,
-          date: item.fixture.date,
+          id: item.id,
+          date: item.utcDate,
           opponent,
           score: `${goalsFor}-${goalsAgainst}`,
           result,
-          venue: item.fixture.venue?.name || '',
+          venue: '',
           homeAway: isHome ? 'Home' : 'Away'
         });
       });
@@ -318,7 +406,7 @@
                 <img src="${escapeAttr(standing.team.logo)}" alt="${escapeAttr(standing.team.name)} logo" class="h-9 w-9 shrink-0 rounded-full object-contain ring-1 ring-slate-200" loading="lazy">
                 <div class="min-w-0">
                   <p class="truncate font-semibold text-slate-950">${escapeHtml(standing.team.name)}</p>
-                  <p class="text-xs text-slate-500">Latest ${standing.played} fixtures</p>
+                  <p class="text-xs text-slate-500">${standing.played >= MATCHES_TO_FETCH ? `Latest ${MATCHES_TO_FETCH} fixtures` : `${standing.played} of ${MATCHES_TO_FETCH} fixtures returned`}</p>
                 </div>
               </div>
             </td>
@@ -356,10 +444,14 @@
 
     function renderMatches(matches) {
       if (!matches.length) {
-        return '<div class="col-span-full rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-500">No recent fixtures available.</div>';
+        return '<div class="col-span-full rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-500">No finished fixtures were returned by the API for this team.</div>';
       }
 
-      return matches.map(match => `
+      const warning = matches.length < MATCHES_TO_FETCH
+        ? `<div class="col-span-full rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Only ${matches.length} of ${MATCHES_TO_FETCH} finished matches were returned by the API for this team.</div>`
+        : '';
+
+      return warning + matches.map(match => `
         <article class="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
           <div class="flex items-center justify-between gap-2">
             <span class="${getBadgeClass(match.result)}">${match.result}</span>
@@ -404,6 +496,37 @@
         day: '2-digit',
         year: 'numeric'
       }).format(new Date(value));
+    }
+
+    function formatApiErrors(errors) {
+      if (!errors) return 'Unknown API error';
+      if (Array.isArray(errors)) return errors.join(', ');
+      if (typeof errors === 'string') return errors;
+
+      return Object.entries(errors)
+        .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
+        .join(', ');
+    }
+
+    function getReadableError(error) {
+      const message = error?.message || 'Please try again later.';
+
+      if (message.includes('HTTP 403')) {
+        return [
+          'The browser request was forbidden by the API or by a public CORS proxy.',
+          'Try Reload once. If it repeats, use a small API proxy under your own domain because free public proxies often block custom auth headers.'
+        ].join(' ');
+      }
+
+      if (message.toLowerCase().includes('free plans do not have access')) {
+        return 'The API key is valid, but this API plan does not allow access to the requested World Cup 2026 data. Use a key with 2026 access, then reload this page.';
+      }
+
+      if (message.toLowerCase().includes('failed to fetch')) {
+        return 'The browser could not reach football-data.org through the available CORS routes. Try Reload or use your own CORS proxy endpoint.';
+      }
+
+      return message;
     }
 
     function setLoadingState(title, text) {
