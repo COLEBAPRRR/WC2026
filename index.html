@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>World Cup 2026 Unified Table</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at top left, rgba(16, 185, 129, 0.16), transparent 34rem),
+        radial-gradient(circle at top right, rgba(59, 130, 246, 0.14), transparent 32rem),
+        linear-gradient(135deg, #f8fafc 0%, #eef2f7 44%, #f9fafb 100%);
+    }
+
+    .spinner {
+      width: 3.25rem;
+      height: 3.25rem;
+      border: 4px solid rgba(15, 23, 42, 0.12);
+      border-top-color: #0f766e;
+      border-radius: 9999px;
+      animation: spin 0.75s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .details-panel {
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(-6px);
+      transition: max-height 320ms ease, opacity 220ms ease, transform 220ms ease;
+    }
+
+    .details-panel.open {
+      max-height: 720px;
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .rank-1 { border-left-color: #f59e0b; }
+    .rank-top { border-left-color: #0d9488; }
+    .rank-mid { border-left-color: #64748b; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-950">
+  <main class="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+    <header class="mb-6 flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-[0.18em] text-teal-700">FIFA World Cup 2026</p>
+        <h1 class="mt-2 text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">Unified League Table</h1>
+        <p class="mt-3 max-w-3xl text-sm leading-6 text-slate-600 sm:text-base">
+          A Champions League-style single table based on each team's latest seven recorded fixtures from API-Football.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 sm:flex sm:items-center">
+        <div class="rounded-lg border border-slate-200 bg-white/80 px-4 py-3 shadow-sm">
+          <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Teams</p>
+          <p id="teamsCount" class="text-2xl font-bold text-slate-950">--</p>
+        </div>
+        <div class="rounded-lg border border-slate-200 bg-white/80 px-4 py-3 shadow-sm">
+          <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Updated</p>
+          <p id="updatedAt" class="text-sm font-semibold text-slate-950">--</p>
+        </div>
+      </div>
+    </header>
+
+    <section id="statusPanel" class="mb-5 rounded-lg border border-slate-200 bg-white/85 p-5 shadow-sm">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex items-center gap-4">
+          <div id="spinner" class="spinner shrink-0"></div>
+          <div>
+            <p id="statusTitle" class="font-semibold text-slate-950">Loading World Cup teams</p>
+            <p id="statusText" class="mt-1 text-sm text-slate-600">Fetching participating teams and their latest fixtures.</p>
+          </div>
+        </div>
+        <button id="reloadButton" type="button" class="hidden rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">
+          Reload
+        </button>
+      </div>
+    </section>
+
+    <section class="min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[860px] border-collapse text-left">
+          <thead class="bg-slate-950 text-xs uppercase tracking-wide text-white">
+            <tr>
+              <th class="w-16 px-4 py-4 font-semibold">Rank</th>
+              <th class="min-w-72 px-4 py-4 font-semibold">Team</th>
+              <th class="px-3 py-4 text-center font-semibold">Played</th>
+              <th class="px-3 py-4 text-center font-semibold">W</th>
+              <th class="px-3 py-4 text-center font-semibold">D</th>
+              <th class="px-3 py-4 text-center font-semibold">L</th>
+              <th class="px-3 py-4 text-center font-semibold">GF</th>
+              <th class="px-3 py-4 text-center font-semibold">GA</th>
+              <th class="px-3 py-4 text-center font-semibold">GD</th>
+              <th class="px-4 py-4 text-center font-semibold">Points</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody" class="divide-y divide-slate-100 bg-white"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API_KEY = '0336324f761f45cca91931287431a91a';
+    const API_BASE_URL = 'https://v3.football.api-sports.io';
+    const WORLD_CUP_LEAGUE_ID = 1;
+    const WORLD_CUP_SEASON = 2026;
+    const MATCHES_TO_FETCH = 7;
+
+    const CORS_PROXIES = [
+      url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+      url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+      url => `https://cors-anywhere.herokuapp.com/${url}`
+    ];
+
+    const tableBody = document.getElementById('tableBody');
+    const statusPanel = document.getElementById('statusPanel');
+    const statusTitle = document.getElementById('statusTitle');
+    const statusText = document.getElementById('statusText');
+    const spinner = document.getElementById('spinner');
+    const reloadButton = document.getElementById('reloadButton');
+    const teamsCount = document.getElementById('teamsCount');
+    const updatedAt = document.getElementById('updatedAt');
+
+    reloadButton.addEventListener('click', loadTable);
+    document.addEventListener('DOMContentLoaded', loadTable);
+
+    async function loadTable() {
+      setLoadingState('Loading World Cup teams', 'Fetching participating teams and their latest fixtures.');
+      tableBody.innerHTML = '';
+      teamsCount.textContent = '--';
+      updatedAt.textContent = '--';
+
+      try {
+        const teams = await fetchWorldCupTeams();
+
+        if (!teams.length) {
+          throw new Error('No teams were returned for the World Cup 2026 competition.');
+        }
+
+        statusText.textContent = `Found ${teams.length} teams. Fetching the last ${MATCHES_TO_FETCH} fixtures for each team.`;
+
+        const standings = await fetchStandingsForTeams(teams);
+        const sortedStandings = sortStandings(standings);
+
+        renderTable(sortedStandings);
+        teamsCount.textContent = sortedStandings.length;
+        updatedAt.textContent = new Intl.DateTimeFormat('en', {
+          month: 'short',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        }).format(new Date());
+
+        setSuccessState(`Loaded ${sortedStandings.length} teams`, `Click any row to review that team's latest ${MATCHES_TO_FETCH} matches.`);
+      } catch (error) {
+        console.error(error);
+        setErrorState('Could not load the table', error.message || 'Please try again later.');
+      }
+    }
+
+    async function fetchWorldCupTeams() {
+      const data = await apiFetch('/teams', {
+        league: WORLD_CUP_LEAGUE_ID,
+        season: WORLD_CUP_SEASON
+      });
+
+      return (data.response || [])
+        .map(item => item.team)
+        .filter(Boolean);
+    }
+
+    async function fetchStandingsForTeams(teams) {
+      const requests = teams.map(async (team, index) => {
+        statusTitle.textContent = 'Building the unified table';
+        statusText.textContent = `Fetching fixtures ${index + 1} of ${teams.length}: ${team.name}`;
+
+        const fixtures = await fetchTeamFixtures(team.id);
+        return calculateTeamStanding(team, fixtures);
+      });
+
+      return Promise.all(requests);
+    }
+
+    async function fetchTeamFixtures(teamId) {
+      const data = await apiFetch('/fixtures', {
+        team: teamId,
+        last: MATCHES_TO_FETCH
+      });
+
+      return (data.response || []).slice(0, MATCHES_TO_FETCH);
+    }
+
+    async function apiFetch(endpoint, params) {
+      const targetUrl = `${API_BASE_URL}${endpoint}?${new URLSearchParams(params).toString()}`;
+      let lastError;
+
+      for (const proxy of CORS_PROXIES) {
+        const proxiedUrl = proxy(targetUrl);
+
+        try {
+          const response = await fetch(proxiedUrl, {
+            headers: {
+              'x-rapidapi-key': API_KEY,
+              'x-apisports-key': API_KEY
+            }
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          const data = await response.json();
+
+          if (data.errors && Object.keys(data.errors).length) {
+            throw new Error(JSON.stringify(data.errors));
+          }
+
+          return data;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      throw lastError || new Error('All CORS proxy requests failed.');
+    }
+
+    function calculateTeamStanding(team, fixtures) {
+      const standing = {
+        team,
+        played: 0,
+        wins: 0,
+        draws: 0,
+        losses: 0,
+        goalsFor: 0,
+        goalsAgainst: 0,
+        goalDifference: 0,
+        points: 0,
+        matches: []
+      };
+
+      fixtures.forEach(item => {
+        const home = item.teams.home;
+        const away = item.teams.away;
+        const homeGoals = Number(item.goals.home ?? 0);
+        const awayGoals = Number(item.goals.away ?? 0);
+        const isHome = home.id === team.id;
+        const opponent = isHome ? away : home;
+        const goalsFor = isHome ? homeGoals : awayGoals;
+        const goalsAgainst = isHome ? awayGoals : homeGoals;
+        const result = getResult(goalsFor, goalsAgainst);
+
+        standing.played += 1;
+        standing.goalsFor += goalsFor;
+        standing.goalsAgainst += goalsAgainst;
+
+        if (result === 'W') {
+          standing.wins += 1;
+          standing.points += 3;
+        } else if (result === 'D') {
+          standing.draws += 1;
+          standing.points += 1;
+        } else {
+          standing.losses += 1;
+        }
+
+        standing.matches.push({
+          id: item.fixture.id,
+          date: item.fixture.date,
+          opponent,
+          score: `${goalsFor}-${goalsAgainst}`,
+          result,
+          venue: item.fixture.venue?.name || '',
+          homeAway: isHome ? 'Home' : 'Away'
+        });
+      });
+
+      standing.goalDifference = standing.goalsFor - standing.goalsAgainst;
+      return standing;
+    }
+
+    function getResult(goalsFor, goalsAgainst) {
+      if (goalsFor > goalsAgainst) return 'W';
+      if (goalsFor < goalsAgainst) return 'L';
+      return 'D';
+    }
+
+    function sortStandings(standings) {
+      return [...standings].sort((a, b) => {
+        if (b.points !== a.points) return b.points - a.points;
+        if (b.goalDifference !== a.goalDifference) return b.goalDifference - a.goalDifference;
+        if (b.goalsFor !== a.goalsFor) return b.goalsFor - a.goalsFor;
+        return a.team.name.localeCompare(b.team.name);
+      });
+    }
+
+    function renderTable(standings) {
+      tableBody.innerHTML = standings.map((standing, index) => {
+        const rank = index + 1;
+        const rankClass = rank === 1 ? 'rank-1' : rank <= 8 ? 'rank-top' : 'rank-mid';
+        const detailsId = `details-${standing.team.id}`;
+
+        return `
+          <tr class="team-row cursor-pointer border-l-4 ${rankClass} transition hover:bg-slate-50" data-details="${detailsId}" tabindex="0">
+            <td class="px-4 py-4 text-sm font-bold text-slate-800">${rank}</td>
+            <td class="px-4 py-4">
+              <div class="flex min-w-0 items-center gap-3">
+                <img src="${escapeAttr(standing.team.logo)}" alt="${escapeAttr(standing.team.name)} logo" class="h-9 w-9 shrink-0 rounded-full object-contain ring-1 ring-slate-200" loading="lazy">
+                <div class="min-w-0">
+                  <p class="truncate font-semibold text-slate-950">${escapeHtml(standing.team.name)}</p>
+                  <p class="text-xs text-slate-500">Latest ${standing.played} fixtures</p>
+                </div>
+              </div>
+            </td>
+            <td class="px-3 py-4 text-center font-medium">${standing.played}</td>
+            <td class="px-3 py-4 text-center text-emerald-700">${standing.wins}</td>
+            <td class="px-3 py-4 text-center text-slate-600">${standing.draws}</td>
+            <td class="px-3 py-4 text-center text-rose-700">${standing.losses}</td>
+            <td class="px-3 py-4 text-center">${standing.goalsFor}</td>
+            <td class="px-3 py-4 text-center">${standing.goalsAgainst}</td>
+            <td class="px-3 py-4 text-center font-semibold">${formatGoalDifference(standing.goalDifference)}</td>
+            <td class="px-4 py-4 text-center text-lg font-black text-slate-950">${standing.points}</td>
+          </tr>
+          <tr class="bg-slate-50">
+            <td colspan="10" class="p-0">
+              <div id="${detailsId}" class="details-panel">
+                <div class="grid gap-3 px-4 py-4 sm:grid-cols-2 xl:grid-cols-7">
+                  ${renderMatches(standing.matches)}
+                </div>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      document.querySelectorAll('.team-row').forEach(row => {
+        row.addEventListener('click', () => toggleDetails(row));
+        row.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleDetails(row);
+          }
+        });
+      });
+    }
+
+    function renderMatches(matches) {
+      if (!matches.length) {
+        return '<div class="col-span-full rounded-md border border-slate-200 bg-white p-4 text-sm text-slate-500">No recent fixtures available.</div>';
+      }
+
+      return matches.map(match => `
+        <article class="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
+          <div class="flex items-center justify-between gap-2">
+            <span class="${getBadgeClass(match.result)}">${match.result}</span>
+            <span class="text-xs font-medium text-slate-500">${escapeHtml(match.homeAway)}</span>
+          </div>
+          <div class="mt-3 flex items-center gap-2">
+            <img src="${escapeAttr(match.opponent.logo)}" alt="${escapeAttr(match.opponent.name)} logo" class="h-7 w-7 shrink-0 rounded-full object-contain ring-1 ring-slate-200" loading="lazy">
+            <p class="min-w-0 truncate text-sm font-semibold text-slate-900">${escapeHtml(match.opponent.name)}</p>
+          </div>
+          <p class="mt-3 text-2xl font-black text-slate-950">${escapeHtml(match.score)}</p>
+          <p class="mt-1 truncate text-xs text-slate-500">${formatDate(match.date)}</p>
+        </article>
+      `).join('');
+    }
+
+    function toggleDetails(row) {
+      const panel = document.getElementById(row.dataset.details);
+      const isOpen = panel.classList.contains('open');
+
+      document.querySelectorAll('.details-panel.open').forEach(openPanel => {
+        if (openPanel !== panel) openPanel.classList.remove('open');
+      });
+
+      panel.classList.toggle('open', !isOpen);
+    }
+
+    function getBadgeClass(result) {
+      const base = 'inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-black text-white';
+      if (result === 'W') return `${base} bg-emerald-600`;
+      if (result === 'D') return `${base} bg-slate-500`;
+      return `${base} bg-rose-600`;
+    }
+
+    function formatGoalDifference(value) {
+      return value > 0 ? `+${value}` : String(value);
+    }
+
+    function formatDate(value) {
+      if (!value) return 'Date unavailable';
+      return new Intl.DateTimeFormat('en', {
+        month: 'short',
+        day: '2-digit',
+        year: 'numeric'
+      }).format(new Date(value));
+    }
+
+    function setLoadingState(title, text) {
+      statusPanel.className = 'mb-5 rounded-lg border border-slate-200 bg-white/85 p-5 shadow-sm';
+      statusTitle.textContent = title;
+      statusText.textContent = text;
+      spinner.classList.remove('hidden');
+      reloadButton.classList.add('hidden');
+    }
+
+    function setSuccessState(title, text) {
+      statusPanel.className = 'mb-5 rounded-lg border border-emerald-200 bg-emerald-50 p-5 shadow-sm';
+      statusTitle.textContent = title;
+      statusText.textContent = text;
+      spinner.classList.add('hidden');
+      reloadButton.classList.remove('hidden');
+    }
+
+    function setErrorState(title, text) {
+      statusPanel.className = 'mb-5 rounded-lg border border-rose-200 bg-rose-50 p-5 shadow-sm';
+      statusTitle.textContent = title;
+      statusText.textContent = text;
+      spinner.classList.add('hidden');
+      reloadButton.classList.remove('hidden');
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value);
+    }
+  </script>
+</body>
+</html>
